@@ -23,3 +23,6 @@ DEFAULT_PER_USER_LIMIT = int(_env("DEFAULT_PER_USER_LIMIT", "4"))
 MAX_SEATS_PER_SHOW = int(_env("MAX_SEATS_PER_SHOW", "20000"))
 MAX_SEATS_PER_REQUEST = 10
 LOG_LEVEL = _env("LOG_LEVEL", "INFO")
+# Test switch: skip the lock-free "already taken" shortcut so every request
+# goes through the locked transaction (used to prove the lock path on its own).
+DISABLE_PRECHECK = _env("DISABLE_PRECHECK", "0") == "1"

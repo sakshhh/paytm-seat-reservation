@@ -1,4 +1,6 @@
 import asyncio
+
+import asyncpg
 import logging
 import time
 import uuid
@@ -95,6 +97,17 @@ async def pool_timeout(_: Request, exc: asyncio.TimeoutError):
     log.error("db pool acquire timed out")
     return JSONResponse({"error": "overloaded", "message": "try again"}, status_code=503,
                         headers={"Retry-After": "1"})
+
+
+@app.exception_handler(OSError)
+@app.exception_handler(asyncpg.PostgresConnectionError)
+@app.exception_handler(asyncpg.InterfaceError)
+@app.exception_handler(asyncpg.CannotConnectNowError)
+async def db_unavailable(_: Request, exc: Exception):
+    # Dependency down: fail closed and say so, rather than an opaque 500.
+    log.error("database unavailable", extra={"error": repr(exc)})
+    return JSONResponse({"error": "db_unavailable", "message": "try again"}, status_code=503,
+                        headers={"Retry-After": "2"})
 
 
 @app.exception_handler(Exception)

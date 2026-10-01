@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import asyncpg
 
-from . import db
+from . import config, db
 from .errors import DomainError
 
 
@@ -80,7 +80,7 @@ async def reserve(show_id: uuid.UUID, user_id: str, seats: list[str], key: str) 
         # Optimistic pre-check: during a hot-seat storm almost everyone is a
         # loser; turn them away without opening a write transaction. This is
         # ONLY a shortcut for "no" — a "yes" is always re-decided under lock.
-        taken = await conn.fetch(
+        taken = [] if config.DISABLE_PRECHECK else await conn.fetch(
             "SELECT label FROM seats WHERE show_id = $1 AND label = ANY($2::text[]) AND status <> 'available'",
             show_id, labels)
         if taken:

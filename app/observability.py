@@ -13,7 +13,7 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id
 
 # ------------------------------------------------------------------ logs ----
 class JsonFormatter(logging.Formatter):
-    RESERVED = set(vars(logging.makeLogRecord({}))) | {"message", "asctime"}
+    RESERVED = set(vars(logging.makeLogRecord({}))) | {"message", "asctime", "color_message"}
 
     def format(self, record: logging.LogRecord) -> str:
         out = {
@@ -38,6 +38,11 @@ def setup_logging(level: str) -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)
+    # route uvicorn's server logs through the JSON handler too
+    for name in ("uvicorn", "uvicorn.error"):
+        lg = logging.getLogger(name)
+        lg.handlers[:] = []
+        lg.propagate = True
     # uvicorn's own access log is replaced by ours (which carries request_id)
     logging.getLogger("uvicorn.access").disabled = True
 
