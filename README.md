@@ -53,6 +53,17 @@ all: {'confirmed': 347, '409 seat_taken': 19493, '409 per_user_limit': 120, 'ide
 ALL CHECKS PASSED
 ```
 
+**Responses that never reached the service.** Every response the app sends carries
+`X-Request-ID`. The burst script labels a response without it (for example a 429 or 502 from
+Render's Cloudflare edge) as `edge`, and reports it separately from the service's own
+outcomes, so a platform throttle can't be mistaken for an app 5xx. Pass `--retry-edge 5` to
+retry those requests the way a real client would: with backoff and the **same idempotency
+key**. The retry can never double-book, which is exactly what idempotency is for. The
+`http_requests_total{status=...}` metric shows what the app itself returned.
+
+On Render's free instance (~0.1 CPU), use a gentler burst:
+`./burst.sh <URL> --requests 3000 --concurrency 50 --retry-edge 5`.
+
 The DB-level storm (`tests/db/storm.sh`) runs the same lock protocol from parallel `psql`
 sessions, without HTTP in between.
 
