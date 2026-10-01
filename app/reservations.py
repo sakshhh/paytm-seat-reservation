@@ -152,7 +152,17 @@ async def _reserve_tx(conn, show_id, user_id, labels, key, req_hash, show) -> Re
         return ReserveResult(_reservation_dict(row), replayed=False)
 
 
-async def cancel(reservation_id: uuid.UUID, user_id: str) -> dict:
+async def get(reservation_id: uuid.UUID, user_id: str) -> dict:
+    async with db.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM reservations WHERE id = $1", reservation_id)
+    # Someone else's reservation is indistinguishable from a missing one.
+    if row is None or row["user_id"] != user_id:
+        raise DomainError(404, "reservation_not_found", "no such reservation")
+    return _reservation_dict(row)
+
+
+async def cancel(reservation_id: uuid.UUID, user_id: str) -> tuple[dict, int]:
+    """Returns (reservation, seats_freed). seats_freed == 0 for a repeat cancel."""
     async with db.acquire() as conn, conn.transaction():
         res = await conn.fetchrow(
             "SELECT * FROM reservations WHERE id = $1 FOR UPDATE", reservation_id)
@@ -161,7 +171,7 @@ async def cancel(reservation_id: uuid.UUID, user_id: str) -> dict:
         if res["user_id"] != user_id:
             raise DomainError(403, "not_owner", "only the owner can cancel this reservation")
         if res["status"] == "cancelled":  # cancelling twice is a no-op
-            return _reservation_dict(res)
+            return _reservation_dict(res), 0
 
         await conn.execute(
             "SELECT 1 FROM user_show_usage WHERE show_id = $1 AND user_id = $2 FOR UPDATE",
@@ -182,4 +192,4 @@ async def cancel(reservation_id: uuid.UUID, user_id: str) -> dict:
         row = await conn.fetchrow(
             """UPDATE reservations SET status = 'cancelled', cancelled_at = now()
                 WHERE id = $1 RETURNING *""", reservation_id)
-        return _reservation_dict(row)
+        return _reservation_dict(row), freed
