@@ -1,0 +1,28 @@
+# Render Blueprint: New -> Blueprint -> pick this repo. Creates the API + Postgres.
+services:
+  - type: web
+    name: seat-reservation
+    runtime: docker
+    region: singapore
+    plan: starter            # free works, but 0.1 CPU + spin-down hurts burst tests; see README
+    healthCheckPath: /readyz # deploy only goes live once the DB is reachable + migrated
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: seat-reservation-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_KEY
+        generateValue: true
+      - key: DB_POOL_MAX
+        value: "20"
+      - key: LOG_LEVEL
+        value: INFO
+
+databases:
+  - name: seat-reservation-db
+    region: singapore
+    plan: free
+    postgresMajorVersion: "16"
