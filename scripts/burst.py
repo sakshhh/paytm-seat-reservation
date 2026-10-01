@@ -237,10 +237,15 @@ def main():
     check(all(len(v) == 1 for v in winners.values()),
           "no seat confirmed to two reservations (from API responses)")
     for seat in hot:
-        n201 = sum(1 for r in results if r[0] == "storm" and r[2] == [seat] and r[4] == 201)
-        n409 = sum(1 for r in results if r[0] == "storm" and r[2] == [seat] and r[4] == 409)
-        check(n201 == 1 and n201 + n409 == a.storm,
-              f"hot seat {seat}: exactly one 201, the rest 409 ({n201} x 201, {n409} x 409)")
+        rs = [r for r in results if r[0] in ("storm", "storm-retry") and r[2] == [seat]]
+        n201 = sum(1 for r in rs if r[4] == 201)
+        win_keys = {r[3] for r in rs if r[4] == 201}
+        losers_ok = all(r[4] == 409 for r in rs if r[3] not in win_keys)
+        replays_ok = all(r[4] in (200, 201) for r in rs if r[3] in win_keys)
+        check(n201 == 1 and losers_ok and replays_ok,
+              f"hot seat {seat}: {len({r[3] for r in rs})} buyers -> exactly one 201, every other "
+              f"buyer 409, winner's retries 200 ({n201} x 201, "
+              f"{sum(1 for r in rs if r[4] == 409)} x 409, {sum(1 for r in rs if r[4] == 200)} x 200)")
 
     by_key = collections.defaultdict(list)
     for r in results:
@@ -281,7 +286,7 @@ def main():
 
     # --- cancel / rebook / ownership ----------------------------------------
     print("\ncancel & rebook")
-    win = next(r for r in results if r[0] == "storm" and r[4] == 201)
+    win = next(r for r in results if r[0] in ("storm", "storm-retry") and r[4] == 201)
     owner, rid, seat = win[1], win[5]["reservation_id"], win[2][0]
     intruder = names[-1]
     st, b, _ = cli.req("POST", f"/reservations/{rid}/cancel", None, auth(intruder))
