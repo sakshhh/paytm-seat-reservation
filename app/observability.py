@@ -1,4 +1,5 @@
 """Structured JSON logs with a per-request correlation id, plus Prometheus metrics."""
+import collections
 import contextvars
 import json
 import logging
@@ -32,11 +33,30 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(out, default=str)
 
 
+class RingBufferHandler(logging.Handler):
+    """Keeps the most recent formatted log lines in memory so they can be served
+    over HTTP (GET /admin/logs) on hosts with no public log viewer."""
+
+    def __init__(self, capacity: int = 5000):
+        super().__init__()
+        self.lines: collections.deque[str] = collections.deque(maxlen=capacity)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.lines.append(self.format(record))
+        except Exception:  # noqa: BLE001 - logging must never break a request
+            self.handleError(record)
+
+
+RECENT_LOGS = RingBufferHandler()
+
+
 def setup_logging(level: str) -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
+    RECENT_LOGS.setFormatter(JsonFormatter())
     root = logging.getLogger()
-    root.handlers[:] = [handler]
+    root.handlers[:] = [handler, RECENT_LOGS]
     root.setLevel(level)
     # route uvicorn's server logs through the JSON handler too
     for name in ("uvicorn", "uvicorn.error"):

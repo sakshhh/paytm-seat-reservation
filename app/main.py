@@ -66,7 +66,7 @@ async def access_log(request: Request, call_next):
     finally:
         elapsed = time.perf_counter() - start
         route = getattr(request.scope.get("route"), "path", "unmatched")
-        if route not in ("/metrics", "/healthz", "/readyz"):
+        if route not in ("/metrics", "/healthz", "/readyz", "/admin/logs"):
             obs.HTTP_REQUESTS.labels(request.method, route, str(status)).inc()
             obs.HTTP_LATENCY.labels(request.method, route).observe(elapsed)
             log.info("request", extra={
@@ -244,6 +244,19 @@ async def readyz():
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"status": "not_ready", "db": repr(e)}, status_code=503)
     return {"status": "ready", "db": "ok"}
+
+
+@app.get("/admin/logs", dependencies=[Depends(auth.require_admin)])
+async def recent_logs(n: int = 200, request_id: str | None = None, contains: str | None = None):
+    """Most recent structured log lines (newest last), from an in-memory ring buffer
+    of the last 5,000. Filter by request_id (correlation id) or a substring."""
+    n = max(1, min(n, 5000))
+    lines = list(obs.RECENT_LOGS.lines)
+    if request_id:
+        lines = [l for l in lines if f'"request_id": "{request_id}"' in l]
+    if contains:
+        lines = [l for l in lines if contains in l]
+    return Response("\n".join(lines[-n:]) + "\n", media_type="application/x-ndjson")
 
 
 @app.get("/metrics")
