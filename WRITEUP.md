@@ -1,5 +1,10 @@
 # Write-up
 
+**Live system:** https://3-26-176-119.sslip.io: one EC2 `c7i-flex.large` running Caddy (TLS),
+the API and Postgres 16. A 20,000-request burst from a laptop against it passed every check in
+52 s: one winner per hot seat, 0 5xx, the invariant held at every poll, and the counters matched
+the API exactly.
+
 ## 1. The atomic decision
 
 **The mechanism:** a row lock on each requested `seats` row (`SELECT … ORDER BY label FOR
@@ -107,9 +112,24 @@ client sees the response, the client retries with the same key and gets a replay
 exactly why idempotency is enforced in the database and not in memory.
 
 Scaling: more API instances are safe, because every decision is in Postgres. The limits
-are the DB's write throughput and its connection count (each instance has
-`DB_POOL_MAX=20`). Next steps would be PgBouncer and partitioning by show (one hot show
-can't be sharded, but different shows can).
+are the DB's write throughput and its connection count (`DB_POOL_MAX` per instance). Next
+steps would be PgBouncer and partitioning by show (one hot show can't be sharded, but
+different shows can).
+
+**The deployed shape, honestly:** the API and Postgres share one EC2 host, so there's no
+network partition *between* them. The partition that matters live is client ↔ service, and
+the same-key retry covers it. The price is that the host is a single point of failure: if it
+dies, we're down, but we never sell wrong. Production would put Postgres on RDS/Aurora
+Multi-AZ, with synchronous standby commit so a failover can't lose a confirmed seat.
+
+**A platform lesson from deploying this:** the first deploy, on Render's free tier, passed
+every correctness check on the requests it served. But about 70% of a burst was rejected
+with 429/502 by Render's Cloudflare edge and never reached the app. The app's own
+`http_requests_total` showed only 201/409/200. I confirmed this by checking for our
+`X-Request-ID` header, which every app response carries and the edge rejections lacked, and
+moved to EC2. There, nothing sits in front of the service but our own Caddy, and the burst
+sees 0 edge rejections. Availability under load is a property of the whole path, not only
+of the code.
 
 ## 5. Observability: what pages me at 2am
 
@@ -126,36 +146,58 @@ can't be sharded, but different shows can).
   `idempotency_key_mismatch` points at a client bug.
 - `seats{status}` over time during an on-sale.
 
-**Logs:** every line has a `request_id`. A user complaint ("I was charged twice") becomes:
-grep their `user_id`, check that the `reservation_id` is the same on both lines and that
-the second `outcome` is `idempotent_replay`.
+**Logs:** every line has a `request_id`, which is also returned as `X-Request-ID`. A user
+complaint ("I was charged twice") becomes: `GET /admin/logs?contains=<user_id>`, then check
+that the `reservation_id` is the same on both lines and that the second `outcome` is
+`idempotent_replay`. `/admin/logs` serves the last 5,000 lines from memory because EC2 has no
+public log viewer. In production these would be shipped to CloudWatch or Loki instead.
 
 ## 6. AI usage
 
-> **Sakshi — rewrite this section in your own words.** It's graded for honesty and you'll be
-> asked about it. Below is a factual record of what happened; edit it to reflect what you decided.
+I built this with Claude (Anthropic), working in steps and deciding at each one: schema →
+reserve/idempotency → observability → burst script → deploy.
 
-I built this with Claude (Anthropic) in an agentic coding session, working step by step:
-schema, then reserve and idempotency, then observability, then the burst, then deploy.
+**What I decided** (Claude laid out the options and trade-offs; I picked):
+- **Stack:** Python/FastAPI + Postgres, with raw SQL so the atomic steps stay visible.
+- **Semantics:**
+  - all-or-nothing for partial multi-seat requests;
+  - confirm + owner cancel rather than TTL holds;
+  - `200` rather than `201` for an idempotent replay, so "exactly one 201 per seat" stays true;
+  - signed demo tokens for identity.
+- **Hosting:**
+  - Render first.
+  - Then, after the edge-throttling result, moving to AWS EC2 (Paytm's own cloud) with a
+    2-vCPU free-tier-eligible instance.
+  - I launched and operated the instance myself.
 
-- **Decided by me** when Claude presented options: Python/FastAPI + Postgres; Render;
-  all-or-nothing partial requests; confirm + cancel rather than TTL holds; 200 (not 201)
-  for an idempotent replay; signed demo tokens for identity.
-- **Proposed by Claude, which I reviewed:**
-  - the lock order (key, then usage row, then sorted seats)
-  - the conditional-UPDATE per-user limit
-  - user-scoped idempotency keys with a deferred FK
-  - the lock-free "no-only" pre-check
-  - the scrape-time DB gauge
-  - the burst script's scenarios
-- **Verified rather than trusted:** a DB-level storm harness (parallel `psql`) before any
-  HTTP code existed; the 20k burst with the pre-check both on and off; Postgres stopped
-  mid-run to check fail-closed behaviour.
-- **What the AI got wrong and the tests caught:**
-  - the burst script initially miscounted hot-seat winners when a retry raced ahead of its
-    original request; it now counts per buyer (idempotency key);
-  - DB connection errors were surfacing as 500s; they are now 503 `db_unavailable`;
-  - an exception class name that doesn't exist in asyncpg.
+**What Claude proposed and I reviewed:**
+- the lock order (idempotency key → usage row → seats sorted `FOR UPDATE`);
+- the conditional-UPDATE per-user limit;
+- user-scoped idempotency keys with a deferred FK;
+- the lock-free "no-only" pre-check;
+- the scrape-time DB gauge;
+- the burst scenarios;
+- the Caddy + sslip.io deployment.
+
+**How it was verified rather than trusted:**
+- A DB-level storm harness (parallel `psql`) proved the lock protocol before any HTTP code
+  existed.
+- A 20k burst, with the pre-check both on and off.
+- Postgres stopped mid-run to check fail-closed behaviour.
+- The same burst against the live URL.
+
+**What went wrong, and how it was caught:**
+- The burst script miscounted hot-seat winners when a retry raced ahead of its original
+  request. It now counts per buyer.
+- DB connection errors surfaced as 500s. They're now 503 `db_unavailable`.
+- An exception class name that doesn't exist in asyncpg; startup failed immediately.
+- The deploy script built a garbage hostname when the instance-metadata call failed. The dry
+  run caught it, and the IP is now validated.
+- The systemd unit set an empty `ADMIN_KEY`, and Compose prefers the process env over
+  `.env`, so the live stack refused to start. Found in `journalctl` on the instance and fixed
+  in the repo.
+- Render's free tier: a correct app still failed the burst at the platform edge. That's
+  §4's lesson, and the reason for the move to EC2.
 
 ## 7. What I'd do next
 
@@ -167,3 +209,6 @@ schema, then reserve and idempotency, then observability, then the burst, then d
 - PgBouncer, plus multi-instance metrics aggregation (counters are per-process, which is
   why there is one worker per container).
 - A proper identity provider (OIDC) instead of the demo token mint.
+- Production topology: Postgres on RDS/Aurora Multi-AZ, two or more API instances behind an
+  ALB in `ap-south-1`, an Elastic IP or real domain, and logs shipped to CloudWatch instead of
+  the in-memory `/admin/logs`.
