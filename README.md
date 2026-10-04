@@ -4,7 +4,7 @@ A JSON API that sells assigned seats under on-sale stampede load without ever
 double-selling a seat, exceeding a per-user limit, or double-booking a retried request.
 
 **Stack:** Python 3.12 · FastAPI · asyncpg (raw SQL, no ORM) · PostgreSQL 16 · Prometheus client
-**Live URL:** `https://<your-service>.onrender.com` ← _fill in after deploy_
+**Live URL:** `https://<ip-with-dashes>.sslip.io` ← _fill in after deploy_
 **Design & trade-offs:** [WRITEUP.md](WRITEUP.md)
 
 ---
@@ -122,18 +122,39 @@ Reserve log lines also carry `user_id`, `show_id`, `seats`, `outcome` and `reser
 On Render, open *Logs* on the service; the response's `X-Request-ID` lets you grep a single
 request.
 
-## Deploy (Render)
+## Deploy (AWS EC2, Mumbai)
 
-1. Push this repo to GitHub.
-2. In Render, choose **New → Blueprint** and select the repo. `render.yaml` creates the web
-   service (Docker) and a Postgres database, and generates `JWT_SECRET` and `ADMIN_KEY`.
-3. When the service shows *Live* (its health check is `/readyz`, so it only goes live once
-   the DB is ready), copy `ADMIN_KEY` from the service's *Environment* tab.
-4. `ADMIN_KEY=... ./burst.sh https://<service>.onrender.com`
+The service runs on one EC2 instance (`c7i-flex.large`, 2 vCPU / 4 GB, `ap-south-1`) as three
+containers:
 
-`plan: starter` is recommended. The free plan works, but it has about 0.1 CPU and spins down
-when idle, so a 20k burst against it is slow and the first request after idle waits for a
-cold start.
+```
+client --HTTPS--> Caddy (TLS, :443) --> API (uvicorn, 1 worker) --> Postgres 16 (local volume)
+```
+
+- **Caddy** gets a Let's Encrypt certificate automatically for `<public-ip-with-dashes>.sslip.io`.
+  sslip.io is a free wildcard DNS name that resolves to the IP embedded in it, so no domain is
+  needed.
+- **Postgres** isn't exposed; only the API can reach it.
+- **No platform proxy or rate limiter** sits in front, so a burst reaches the service in full.
+
+**Fresh deploy:**
+1. Launch an Ubuntu 24.04 instance. Open ports 80 and 443 in its security group.
+2. Paste [`deploy/ec2-user-data.sh`](deploy/ec2-user-data.sh) into *User data* after setting
+   `REPO_URL` in it. It installs Docker, raises kernel connection limits, clones the repo and
+   installs a systemd unit that runs [`deploy/start.sh`](deploy/start.sh) at every boot.
+3. Wait about 3 minutes, then check `https://<ip-with-dashes>.sslip.io/readyz`.
+
+**Operate (on the instance):**
+
+```bash
+sudo /opt/seat-reservation/deploy/start.sh                     # pull latest code + redeploy
+sudo grep ADMIN_KEY /opt/seat-reservation/deploy/.env           # the admin key
+cd /opt/seat-reservation/deploy && sudo docker compose -f docker-compose.prod.yml logs -f api   # live JSON logs
+```
+
+Secrets (`DB_PASSWORD`, `JWT_SECRET`, `ADMIN_KEY`) are generated on first boot into
+`deploy/.env`, which is git-ignored. The earlier Render deploy is kept in `render.yaml` for
+reference; Render's free tier throttled bursts at its edge (see WRITEUP).
 
 ## Configuration
 

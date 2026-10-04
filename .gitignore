@@ -3,3 +3,5 @@ __pycache__/
 .env
 .venv/
 .sync.tgz
+deploy/.env
+deploy/.env.tmp

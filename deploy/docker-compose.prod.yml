@@ -1,0 +1,55 @@
+# Production stack for a single EC2 host:  Caddy (HTTPS) -> API -> Postgres
+# Started by deploy/start.sh, which fills in SITE_ADDRESS and the secrets in deploy/.env
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "50m", max-file: "5" }
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: seats
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set in deploy/.env}
+      POSTGRES_DB: seats
+    command: ["postgres", "-c", "max_connections=100", "-c", "shared_buffers=512MB"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seats"]
+      interval: 2s
+      retries: 30
+    logging: *logging
+    # not published: only the API can reach the database
+
+  api:
+    build: ..
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://seats:${DB_PASSWORD}@db:5432/seats
+      JWT_SECRET: ${JWT_SECRET:?set in deploy/.env}
+      ADMIN_KEY: ${ADMIN_KEY:?set in deploy/.env}
+      DB_POOL_MAX: "40"
+      LOG_LEVEL: INFO
+    depends_on:
+      db: { condition: service_healthy }
+    sysctls: { net.core.somaxconn: 65535 }
+    ulimits: { nofile: { soft: 1048576, hard: 1048576 } }
+    logging: *logging
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set by start.sh}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [api]
+    sysctls: { net.core.somaxconn: 65535 }
+    ulimits: { nofile: { soft: 1048576, hard: 1048576 } }
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:

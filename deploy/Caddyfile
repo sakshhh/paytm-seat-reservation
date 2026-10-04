@@ -1,0 +1,12 @@
+# SITE_ADDRESS is e.g. 13-232-10-5.sslip.io (Caddy gets a Let's Encrypt cert automatically)
+# or ":80" for plain HTTP.
+{$SITE_ADDRESS} {
+	encode gzip
+	reverse_proxy api:8000 {
+		# keep a warm pool of upstream connections during a burst
+		transport http {
+			keepalive 60s
+			keepalive_idle_conns 512
+		}
+	}
+}
