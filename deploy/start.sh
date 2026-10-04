@@ -33,5 +33,8 @@ grep -v '^SITE_ADDRESS=' .env > .env.tmp || true
 echo "SITE_ADDRESS=$SITE_ADDRESS" >> .env.tmp
 mv .env.tmp .env
 
+# Compose prefers process env over --env-file; drop anything that could shadow .env
+# (e.g. an empty ADMIN_KEY inherited from systemd) so .env is the single source of truth.
+unset ADMIN_KEY JWT_SECRET DB_PASSWORD SITE_ADDRESS
 docker compose -f docker-compose.prod.yml --env-file .env up -d --build --remove-orphans
-echo "service URL: https://${SITE_ADDRESS}   (admin key: sudo grep ADMIN_KEY $(pwd)/.env)"
+echo "service URL: https://$(grep ^SITE_ADDRESS= .env | cut -d= -f2)   (admin key: sudo grep ADMIN_KEY $(pwd)/.env)"

@@ -35,7 +35,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-Environment=ADMIN_KEY=${ADMIN_KEY}
+$( [ -n "$ADMIN_KEY" ] && echo "Environment=ADMIN_KEY=$ADMIN_KEY" )
 ExecStart=/opt/seat-reservation/deploy/start.sh
 TimeoutStartSec=900
 
